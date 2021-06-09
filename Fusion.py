@@ -60,7 +60,7 @@ audio_labels = ['Screaming', 'Explosion', 'Fireworks', 'Gunshot_gunfire', 'Civil
 # ## Video labels
 video_dataset_labels = {0: 'NonViolence',
                         1: 'Fighting',
-                        2: 'Shooting',
+                        2: 'Gun/Gunshot',
                         3: 'Riot/Crowded',
                         4: 'Abuse',
                         5: 'Car accident',
@@ -476,17 +476,20 @@ def get_video_and_audio_prediction(file_path, audio_sliding_window=5,
             video_preds_sum = [sum(x) for x in zip(*temp_video_preds)]
 
         for label_index, video_pred in enumerate(video_preds_sum):
-            if (video_pred > 0.15 and label_index != 0 and label_index!=3) or (label_index==3 and video_pred > 0.5):
+            if (video_pred > 0.152 and label_index != 0 and label_index!=3 and label_index!=6 and label_index!=1) or \
+            (label_index==3 and video_pred > 0.85) or \
+            (label_index==6 and video_pred > 0.2) or (label_index==1 and video_pred > 0.31):
                 video_preds.append({"label": video_dataset_labels[label_index], "pred": video_pred})
-        if len(video_preds) == 0 and video_preds_sum[0] > 0.15:
-            video_preds.append({"label": video_dataset_labels[0], "pred": video_preds_sum[0]})
+        # if len(video_preds) == 0 and video_preds_sum[0] > 0.15:
+        #     video_preds.append({"label": video_dataset_labels[0], "pred": video_preds_sum[0]})
         # making audio labels
         audio_preds = []
         for label_index, audio_pred in enumerate(results_audio[str(i)]):
-            if audio_pred > 0.5 and label_index != 5:
+            if (audio_pred > 0.4 and label_index != 5 and label_index!=1 and label_index!=3) or \
+             (label_index ==1 and audio_pred >0.5) or (label_index ==3 and audio_pred > 0.4):
                 audio_preds.append({"label": audio_labels[label_index], "pred": str(audio_pred)})
-        if len(audio_preds) == 0 and results_audio[str(i)][5] > 0.5:
-            audio_preds.append({"label": audio_labels[5], "pred": str(results_audio[str(i)][5])})
+        # if len(audio_preds) == 0 and results_audio[str(i)][5] > 0.4:
+        #     audio_preds.append({"label": audio_labels[5], "pred": str(results_audio[str(i)][5])})
         preds[i] = {"video": video_preds, "audio": audio_preds}
 
     print('done preds')
