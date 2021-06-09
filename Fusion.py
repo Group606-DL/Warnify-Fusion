@@ -7,6 +7,7 @@ import numpy as np
 import tensorflow as tf
 from keras.models import load_model
 from matplotlib import pyplot as plt
+import sys
 
 # Video
 import cv2
@@ -21,8 +22,9 @@ import subprocess
 # Server API
 from flask import Flask, request, abort
 import requests
-
+import json
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"  # for disable GPU
+##################################################################################################
 
 # # Globals
 # Video Globals
@@ -38,13 +40,13 @@ SECOND = 1000
 
 # Paths
 CHECKPOINT_FOLDER = 'checkpoints'
-TEST_FOLDER = './data'
+TEST_FOLDER = 'videos'
 
 AUDIO_FORMAT = "wav"
 AUDIO_FILE_TYPE = '.wav'
 
 # Server 
-SERVER_URL = '/api/sendLabel'
+SERVER_URL = 'http://10.10.248.106:8080/censored'
 
 # # Models
 rgb_model = load_model(CHECKPOINT_FOLDER + '/rgb/model_25_0.72.h5')
@@ -52,10 +54,62 @@ flow_model = load_model(CHECKPOINT_FOLDER + '/flow/model_28_0.67.h5')
 # combined_rgb_flow_model = load_model(CHECKPOINT_FOLDER+'/combined/31-05-2021_20-14-31/model_01_1.00.h5')
 audio_model = load_model(CHECKPOINT_FOLDER + '/audio/ep-80-AudioModel-20_26_49-05-24-2021.h5')
 
+# ## Audio labels
+audio_labels = ['Screaming', 'Explosion', 'Fireworks', 'Gunshot_gunfire', 'Civil_defense_siren', 'Music/Talking']
 
+# ## Video labels
+video_dataset_labels = {0: 'NonViolence',
+                        1: 'Fighting',
+                        2: 'Shooting',
+                        3: 'Riot/Crowded',
+                        4: 'Abuse',
+                        5: 'Car accident',
+                        6: 'Explosion/Fire/Smoke'}
+#######
+import traceback
+from werkzeug.wsgi import ClosingIterator
+
+class AfterThisResponse:
+    def __init__(self, app=None):
+        self.callbacks = []
+        if app:
+            self.init_app(app)
+
+    def __call__(self, callback):
+        self.callbacks.append(callback)
+        return callback
+
+    def init_app(self, app):
+        # install extensioe
+        app.after_this_response = self
+
+        # install middleware
+        app.wsgi_app = AfterThisResponseMiddleware(app.wsgi_app, self)
+
+    def flush(self):
+        try:
+            for fn in self.callbacks:
+                try:
+                    fn()
+                except Exception:
+                    traceback.print_exc()
+        finally:
+            self.callbacks = []
+
+class AfterThisResponseMiddleware:
+    def __init__(self, application, after_this_response_ext):
+        self.application = application
+        self.after_this_response_ext = after_this_response_ext
+
+    def __call__(self, environ, start_response):
+        iterator = self.application(environ, start_response)
+        try:
+            return ClosingIterator(iterator, [self.after_this_response_ext.flush])
+        except Exception:
+            traceback.print_exc()
+            return iterator
+##################################################################################################
 # # Utils
-
-
 def ensure_folder_exists(folder_path):
     if not os.path.exists(folder_path):
         try:
@@ -63,7 +117,7 @@ def ensure_folder_exists(folder_path):
         except OSError:
             print(f"Can't create destination directory {folder_path}!")
 
-
+##################################################################################################
 # # Audio Utils
 def decode_audio(audio_binary):
     audio, _ = tf.audio.decode_wav(audio_binary, desired_channels=1, )  # converted to mono channel
@@ -118,10 +172,11 @@ def convert_mp4_to_wav(file_path):
     # Convert mp4 to wav
     src = file_path
 
-    filename = os.path.basename(file_path).split('.')[0]
-    dest = TEST_FOLDER + filename + AUDIO_FILE_TYPE
-    command = "ffmpeg -i '" + src + "' -ac 2 -f wav '" + dest + "'"
-    subprocess.call(command, shell=True)
+    filename = '.'.join(os.path.basename(file_path).split('.')[:-1])
+    dest = TEST_FOLDER +'/'+ filename + AUDIO_FILE_TYPE
+    if not os.path.exists(dest):
+        command = "ffmpeg -i '" + src + "' -ac 2 -f wav '" + dest + "'"
+        subprocess.call(command, shell=True)
 
 
 def video_to_wav_splits(filename, seconds_to_split=5):
@@ -129,7 +184,7 @@ def video_to_wav_splits(filename, seconds_to_split=5):
 
     # Split the file to parts
     duration = 0
-    file_path = f'{TEST_FOLDER}{filename}{AUDIO_FILE_TYPE}'
+    file_path = f'{TEST_FOLDER}/{filename}{AUDIO_FILE_TYPE}'
     audio_file = AudioSegment.from_wav(file_path)
 
     audio_parts_path = f'{TEST_FOLDER}/parts/{filename}'
@@ -151,7 +206,7 @@ def video_to_wav_splits(filename, seconds_to_split=5):
                         str(end_time / SECOND) + AUDIO_FILE_TYPE,
                         format=AUDIO_FORMAT)
 
-
+##################################################################################################
 # ## Video Utils
 
 #### Get Farneback Optical flow
@@ -303,18 +358,7 @@ def normalize(arr, rescale=1 / 255):
     return arr
 
 
-# ## Audio labels
-audio_labels = ['Screaming', 'Explosion', 'Fireworks', 'Gunshot_gunfire', 'Civil_defense_siren', 'Music/Talking']
-
-# ## Video labels
-video_dataset_labels = {0: 'NonViolence',
-                        1: 'Fighting',
-                        2: 'Shooting',
-                        3: 'Riot/Crowded',
-                        4: 'Abuse',
-                        5: 'Car accident',
-                        6: 'Explosion/Fire/Smoke'}
-
+##################################################################################################
 
 # # Predict
 # ## Predict rgb+flow model
@@ -380,8 +424,9 @@ def predict_by_video(video_path, fps=5, sliding_window=SLIDING_WINDOW, is_print=
 def predict_by_audio(file_path, sliding_window=16):
     # TODO: return the splits and not saved them..
     # Preprocess audio - convert to wav file and splits the file
+    filename = '.'.join(os.path.basename(file_path).split('.')[:-1])
+
     convert_mp4_to_wav(file_path)
-    filename = os.path.basename(file_path).split('.')[0]
     video_to_wav_splits(filename, sliding_window)
 
     audio_parts_path = f'{TEST_FOLDER}/parts/{filename}'
@@ -417,7 +462,7 @@ def get_video_and_audio_prediction(file_path, audio_sliding_window=5,
     # predict by video
     results_video, video_labels = predict_by_video(file_path, is_print=False, fps=video_fps,
                                                    sliding_window=video_sliding_window, print_images=False)
-
+    print('results_video')
     # predict by audio
     results_audio, audio_labels = predict_by_audio(file_path, sliding_window=audio_sliding_window)
 
@@ -442,30 +487,40 @@ def get_video_and_audio_prediction(file_path, audio_sliding_window=5,
 
         preds[i] = {'video': video_preds, 'audio': audio_preds}
 
+    print('done preds',  file=sys.stderr)
     return preds
-
 
 # # API Server
 app = Flask(__name__)
+AfterThisResponse(app)
 
 
 @app.route('/prediction', methods=['POST'])
 def prediction():
-    file_path = request.json['videoPath']
-    if not os.path.exists(file_path):
-        abort(404, description='file not found :(')
+    data = request.get_json(force=True)
+    file_path = data['videoPath']
 
-    @app.after_response
+    if not os.path.exists(file_path):
+        abort(400, description='file not found :(')
+
+    @app.after_this_response
     def worker():
-        print('get video audio prediction')
+        print('get video audio prediction' + file_path)
         preds = get_video_and_audio_prediction(file_path)
-        response = {'preds': preds, 'videoPath': file_path}
-        r = requests.post(SERVER_URL, data=response)
+        filename = '.'.join(os.path.basename(file_path).split('.')[:-1])
+        print('send response')
+        
+        preds_json=json.dumps(preds)
+        response = {'content': preds_json, 'name': filename}
+
+        print(response)
+        r = requests.post(SERVER_URL, data=response, headers={'content-type': 'application/json'})
 
     return 'finished', 200
 
-@app.route('/isAlive', methods=['GET'])
+@app.route('/isalive', methods=['GET'])
 def test():
   return 'Alive', 200
 
-app.run(host='0.0.0.0')
+
+app.run(host='0.0.0.0', debug=True)
